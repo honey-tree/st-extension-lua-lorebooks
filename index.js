@@ -1,63 +1,175 @@
-// The main script for the extension
-// The following are examples of some basic extension functionality
+import { getContext } from '/scripts/extensions.js';
+import { characters, chat_metadata, event_types, eventSource, this_chid } from '/script.js';
+import { saveWorldInfo, getSortedEntries, loadWorldInfo, METADATA_KEY, selected_world_info } from '/scripts/world-info.js';
+import { LuaFactory } from 'https://cdn.jsdelivr.net/npm/wasmoon/+esm';
 
-//You'll likely need to import extension_settings, getContext, and loadExtensionSettings from extensions.js
-import { extension_settings, getContext, loadExtensionSettings } from "../../../extensions.js";
+const extensionName = "st-extension-lua-lorebooks";
 
-//You'll likely need to import some other functions from the main script
-import { saveSettingsDebounced } from "../../../../script.js";
+/*
+Quick convenience function for genning HTML
+ */
 
-// Keep track of where your extension is located, name should match repo name
-const extensionName = "st-extension-example";
-const extensionFolderPath = `scripts/extensions/third-party/${extensionName}`;
-const extensionSettings = extension_settings[extensionName];
-const defaultSettings = {};
+function h(type, atts, content) {
+    const el = document.createElement(type);
+    for (const [k, v] of Object.entries(atts)) {
+        el.setAttribute(k, v);
+    }
 
+    for (const c of content) {
+        if (typeof c === "string") {
+            const n = document.createTextNode(c);
+            el.appendChild(n);
+        } else if (c instanceof Node) {
+            el.appendChild(c);
+        } else {
+            throw "Unsupported content";
+        }
+    }
 
- 
-// Loads the extension settings if they exist, otherwise initializes them to the defaults.
-async function loadSettings() {
-  //Create the settings if they don't exist
-  extension_settings[extensionName] = extension_settings[extensionName] || {};
-  if (Object.keys(extension_settings[extensionName]).length === 0) {
-    Object.assign(extension_settings[extensionName], defaultSettings);
-  }
-
-  // Updating settings in the UI
-  $("#example_setting").prop("checked", extension_settings[extensionName].example_setting).trigger("input");
+    return el;
 }
 
-// This function is called when the extension settings are changed in the UI
-function onExampleInput(event) {
-  const value = Boolean($(event.target).prop("checked"));
-  extension_settings[extensionName].example_setting = value;
-  saveSettingsDebounced();
+/*
+Starting off with things that should already be in world-info.js
+ */
+
+function getLoreBookNames() {
+    const loreBookNames = new Set();
+
+    //char lorebook
+    const character = characters[this_chid];
+    if (character?.data?.extensions?.world) {
+        loreBookNames.add(character?.data?.extensions?.world);
+    }
+
+    //global lorebook
+    if (selected_world_info.length) {
+        loreBookNames.add(...selected_world_info);
+    }
+
+    //chat lorebook
+    if (chat_metadata[METADATA_KEY]) {
+        loreBookNames.add(chat_metadata[METADATA_KEY]);
+    }
+
+    return Array.from(loreBookNames);
 }
 
-// This function is called when the button is clicked
-function onButtonClick() {
-  // You can do whatever you want here
-  // Let's make a popup appear with the checked setting
-  toastr.info(
-    `The checkbox is ${extension_settings[extensionName].example_setting ? "checked" : "not checked"}`,
-    "A popup appeared because you clicked the button!"
-  );
+async function getLoreBooks() {
+    return (await Promise.all(
+        getLoreBookNames().map(loreBookName => loadWorldInfo(loreBookName).then(worldInfo => [ loreBookName, worldInfo ]))
+    )).reduce((acc, el) => {
+        acc.set(el[0], el[1]);
+        return acc;
+    }, new Map());
+}
+
+/*
+Bootleg nonsense I have to do because the LB entries are checked on the other side with a JSON.stringify equality
+check
+
+Basically we just replace the entries with "canonical" versions
+*/
+
+class EntryReplacementService {
+    sortedEntries = new Map();
+
+    async init() {
+        return getSortedEntries().then(se => se.forEach(el => {
+            this.sortedEntries.set(`${el.world}.${el.uid}`, el);
+        }));
+    }
+
+    replace(entries, world) {
+        return entries.map(entry => this.sortedEntries.get(`${world}.${entry.uid}`));
+    }
+}
+
+/*
+Actual extension code that does the thing
+ */
+async function enableLuaEntries() {
+    const context = getContext();
+
+    const loreBooks = await getLoreBooks();
+
+    const erService = new EntryReplacementService();
+    await erService.init();
+
+    for (const [loreBookName, loreBook] of loreBooks) {
+        if (!loreBook.extensions?.luaCode) {
+            continue;
+        }
+
+        try {
+            const luaFactory = new LuaFactory();
+            const lua = await luaFactory.createEngine();
+
+            console.debug(`[LLB]___EXECUTING ${loreBookName}'s LUA CODE___`)
+            await lua.doString(loreBook.extensions.luaCode);
+            console.debug(`[LLB]___DONE EXECUTING ${loreBookName}'s LUA CODE___`)
+
+            const data = {chat: context.chat, loreBook: loreBook.entries, context: context};
+            console.debug("The data object that will be fed into the Lua code:", data);
+
+            console.debug(`[LLB]___INVOKING ${loreBookName}'s LUA FUNCTION TO DETERMINE LB ENTRIES___`);
+            const entriesFunction = lua.global.get('entries');
+            const luaResp = entriesFunction(data);
+            console.debug(`[LLB]___DONE INVOKING ${loreBookName}'s LUA FUNCTION TO DETERMINE LB ENTRIES___`);
+
+            const activatedEntries = Object.entries(loreBook.entries).map(function([id, entry]) {
+                return luaResp.entries[entry.automationId] ? entry : null;
+            }).filter(entry => entry);
+
+            await eventSource.emit(event_types.WORLDINFO_FORCE_ACTIVATE, erService.replace(activatedEntries, loreBookName));
+        } catch (err) {
+            console.error("[LLB] Error:", err);
+        }
+    }
 }
 
 // This function is called when the extension is loaded
 jQuery(async () => {
-  // This is an example of loading HTML from a file
-  const settingsHtml = await $.get(`${extensionFolderPath}/example.html`);
+    console.log("[LLB] LuaLBs extension loaded");
 
-  // Append settingsHtml to extensions_settings
-  // extension_settings and extensions_settings2 are the left and right columns of the settings menu
-  // Left should be extensions that deal with system functions and right should be visual/UI related 
-  $("#extensions_settings").append(settingsHtml);
+    /*
+    Registering extension events
+     */
+    eventSource.on(event_types.MESSAGE_SENT, enableLuaEntries);
+    eventSource.on(event_types.MESSAGE_SWIPED, enableLuaEntries);
 
-  // These are examples of listening for events
-  $("#my_button").on("click", onButtonClick);
-  $("#example_setting").on("input", onExampleInput);
+    /*
+    Rendering some HTML
+     */
+    jQuery("#world_popup").append(h("div", {}, [
+        h("label", {}, [
+            h("small", {for: "luaTextarea"}, ["Lua"]),
+        ]), h("textarea", {id: "luaTextarea"}, [""]),
+    ]));
 
-  // Load settings when starting things up (if you have any)
-  loadSettings();
+    /*
+    Registering HTML events
+     */
+    jQuery("#world_editor_select").on('change', async function () {
+        const selectedIndex = String($('#world_editor_select').find(':selected').text());
+        if (!selectedIndex) return;
+
+        const loreBook = await loadWorldInfo(selectedIndex);
+
+        jQuery("#luaTextarea").val(loreBook?.extensions?.luaCode || '');
+    });
+
+    jQuery("#luaTextarea").on('change', async function () {
+        const luaCode = jQuery("#luaTextarea").val();
+
+        const selectedIndex = String($('#world_editor_select').find(':selected').text());
+        if (!selectedIndex) return;
+
+        const loreBook = await loadWorldInfo(selectedIndex);
+
+        loreBook.extensions ??= {};
+        loreBook.extensions.luaCode = luaCode;
+
+        await saveWorldInfo(selectedIndex, loreBook)
+    })
 });
