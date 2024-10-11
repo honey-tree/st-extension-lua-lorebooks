@@ -65,27 +65,6 @@ async function getLoreBooks() {
 }
 
 /*
-Bootleg nonsense I have to do because the LB entries are checked on the other side with a JSON.stringify equality
-check
-
-Basically we just replace the entries with "canonical" versions
-*/
-
-class EntryReplacementService {
-    sortedEntries = new Map();
-
-    async init() {
-        return getSortedEntries().then(se => se.forEach(el => {
-            this.sortedEntries.set(`${el.world}.${el.uid}`, el);
-        }));
-    }
-
-    replace(entries, world) {
-        return entries.map(entry => this.sortedEntries.get(`${world}.${entry.uid}`));
-    }
-}
-
-/*
 Actual extension code that does the thing
  */
 async function enableLuaEntries() {
@@ -109,7 +88,12 @@ async function enableLuaEntries() {
             await lua.doString(loreBook.extensions.luaCode);
             console.debug(`[LLB]___DONE EXECUTING ${loreBookName}'s LUA CODE___`)
 
-            const data = {chat: context.chat, loreBook: loreBook.entries, context: context};
+            const data = JSON.parse(JSON.stringify({
+                chat: context.chat,
+                loreBook: loreBook.entries,
+                context: context}
+            ));
+
             console.debug("The data object that will be fed into the Lua code:", data);
 
             console.debug(`[LLB]___INVOKING ${loreBookName}'s LUA FUNCTION TO DETERMINE LB ENTRIES___`);
@@ -117,11 +101,26 @@ async function enableLuaEntries() {
             const luaResp = entriesFunction(data);
             console.debug(`[LLB]___DONE INVOKING ${loreBookName}'s LUA FUNCTION TO DETERMINE LB ENTRIES___`);
 
+            console.debug("[LLB] Complete Lua output:", luaResp);
+
             const activatedEntries = Object.entries(loreBook.entries).map(function([id, entry]) {
-                return luaResp.entries[entry.automationId] ? entry : null;
+                const luaEntry = luaResp.entries[entry.automationId];
+                if (!luaEntry) {
+                    return null;
+                }
+
+                entry.world = loreBookName;
+
+                for (const [keyOver, valOver] of Object.entries(luaEntry)) {
+                    entry[keyOver] = valOver;
+                }
+
+                return entry;
             }).filter(entry => entry);
 
-            await eventSource.emit(event_types.WORLDINFO_FORCE_ACTIVATE, erService.replace(activatedEntries, loreBookName));
+            console.debug("[LLB] Activated entries:", activatedEntries);
+
+            await eventSource.emit(event_types.WORLDINFO_FORCE_ACTIVATE, activatedEntries);
         } catch (err) {
             console.error("[LLB] Error:", err);
         }
