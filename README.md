@@ -8,7 +8,10 @@ See usage.
 
 ## Non-features
 
-- lorebook PNG embeddings do not work (I'm working on it)
+- ~~lorebook PNG embeddings do not work~~ lorebook PNG embeddings fine
+according to the v2 spec and seem to work on ST. Not 100 they work through
+chub, but that'd be an issue with chub not adhering to the v2 spec, which vetoes
+discarding unknown lorebook entry extensions fields.
 - you can't dynamically store and reuse metadata through the chat (also
 working on it, should be an absolute pain in the ass)
 - you can't read the preset with Lua (should be simple enough to implement)
@@ -114,5 +117,7 @@ end
 
 ## Prerequisites
 
-[This commit](https://github.com/SillyTavern/SillyTavern/commit/ac50cec02f72ffe70757fc55d4bc9371368d8068)
+[This commit](https://github.com/SillyTavern/SillyTavern/commit/838dfaab8081bb1c9a6c2e457bfba4f50708032a)
 needs to be merged into your ST.
+
+Times the required commit has been upped: 1
