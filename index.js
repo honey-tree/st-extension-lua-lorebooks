@@ -67,13 +67,64 @@ async function getLoreBooks() {
 /*
 Actual extension code that does the thing
  */
+
+/*
+The luaLoreBook state is kept both at the top-level, for preservation
+even if lb entries are deleted, and at the entry level, for imports
+and exports.
+
+Because top-level lorebook extensions are bootleg stuff I'm forcing
+and not part of the spec.
+ */
+
+function extractTopLevelLuaLoreBook(loreBook) {
+    return loreBook?.extensions?.luaLoreBook;
+}
+
+function extractEntryLevelLuaLoreBook(loreBook) {
+    for (const [_, entry] of Object.entries(loreBook.entries)) {
+        if (entry?.extensions?.luaLoreBook) {
+            return entry.extensions.luaLoreBook
+        }
+    }
+
+    return undefined;
+}
+
+function extractLuaLoreBook(loreBook) {
+    return extractTopLevelLuaLoreBook(loreBook) || extractEntryLevelLuaLoreBook(loreBook);
+}
+
+function insertLuaLoreBook(loreBook, luaLoreBook) {
+    loreBook.extensions ||= {};
+    loreBook.extensions.luaLoreBook = luaLoreBook;
+
+    for (const [_, entry] of Object.entries(loreBook.entries)) {
+        if (entry.extensions) {
+            delete (entry.extensions["luaLoreBook"]);
+        }
+    }
+
+    const [key, entry] = Object.entries(loreBook.entries)[0];
+    entry.extensions = entry.extensions || {};
+    entry.extensions.luaLoreBook = luaLoreBook;
+}
+
+async function ensureBothLuaLoreBooks(loreBookName, loreBook) {
+    const topLevelLuaLoreBook = extractTopLevelLuaLoreBook(loreBook);
+    const entryLevelLuaLoreBook = extractEntryLevelLuaLoreBook(loreBook);
+
+    if (JSON.stringify(topLevelLuaLoreBook) !== JSON.stringify(entryLevelLuaLoreBook)) {
+        const luaLoreBook = topLevelLuaLoreBook || entryLevelLuaLoreBook;
+        insertLuaLoreBook(loreBook, luaLoreBook);
+        await saveWorldInfo(loreBookName, loreBook);
+    }
+}
+
 async function enableLuaEntries() {
     const context = getContext();
 
     const loreBooks = await getLoreBooks();
-
-    const erService = new EntryReplacementService();
-    await erService.init();
 
     for (const [loreBookName, loreBook] of loreBooks) {
         if (!loreBook.extensions?.luaCode) {
@@ -84,8 +135,13 @@ async function enableLuaEntries() {
             const luaFactory = new LuaFactory();
             const lua = await luaFactory.createEngine();
 
+            const luaLoreBook = extractLuaLoreBook(loreBook);
+            if (!luaLoreBook) {
+                continue;
+            }
+
             console.debug(`[LLB]___EXECUTING ${loreBookName}'s LUA CODE___`)
-            await lua.doString(loreBook.extensions.luaCode);
+            await lua.doString(luaLoreBook.luaCode);
             console.debug(`[LLB]___DONE EXECUTING ${loreBookName}'s LUA CODE___`)
 
             const data = JSON.parse(JSON.stringify({
@@ -136,6 +192,7 @@ jQuery(async () => {
      */
     eventSource.on(event_types.MESSAGE_SENT, enableLuaEntries);
     eventSource.on(event_types.MESSAGE_SWIPED, enableLuaEntries);
+    eventSource.on(event_types.WORLDINFO_UPDATED, ensureBothLuaLoreBooks);
 
     /*
     Rendering some HTML
@@ -155,7 +212,9 @@ jQuery(async () => {
 
         const loreBook = await loadWorldInfo(selectedIndex);
 
-        jQuery("#luaTextarea").val(loreBook?.extensions?.luaCode || '');
+        const luaLoreBook = extractLuaLoreBook(loreBook);
+
+        jQuery("#luaTextarea").val(luaLoreBook?.luaCode || '');
     });
 
     jQuery("#luaTextarea").on('change', async function () {
@@ -166,8 +225,7 @@ jQuery(async () => {
 
         const loreBook = await loadWorldInfo(selectedIndex);
 
-        loreBook.extensions ??= {};
-        loreBook.extensions.luaCode = luaCode;
+        insertLuaLoreBook(loreBook, {luaCode: luaCode});
 
         await saveWorldInfo(selectedIndex, loreBook)
     })
