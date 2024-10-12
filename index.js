@@ -111,6 +111,8 @@ function insertLuaLoreBook(loreBook, luaLoreBook) {
 }
 
 async function ensureBothLuaLoreBooks(loreBookName, loreBook) {
+    console.debug("[LLB] Ensure both Lua LoreBooks triggered");
+
     const topLevelLuaLoreBook = extractTopLevelLuaLoreBook(loreBook);
     const entryLevelLuaLoreBook = extractEntryLevelLuaLoreBook(loreBook);
 
@@ -122,15 +124,19 @@ async function ensureBothLuaLoreBooks(loreBookName, loreBook) {
 }
 
 async function enableLuaEntries() {
+    console.debug("[LLB] Message Event Triggered");
     const context = getContext();
 
-    const loreBooks = await getLoreBooks();
+    let loreBooks = [];
+
+    try {
+        loreBooks = await getLoreBooks();
+    } catch (e) {
+        console.error("[LLB] Error loading lorebooks", e);
+        return;
+    }
 
     for (const [loreBookName, loreBook] of loreBooks) {
-        if (!loreBook.extensions?.luaCode) {
-            continue;
-        }
-
         try {
             const luaFactory = new LuaFactory();
             const lua = await luaFactory.createEngine();
@@ -147,8 +153,8 @@ async function enableLuaEntries() {
             const data = JSON.parse(JSON.stringify({
                 chat: context.chat,
                 loreBook: loreBook.entries,
-                context: context}
-            ));
+                context: context
+            }));
 
             console.debug("The data object that will be fed into the Lua code:", data);
 
@@ -193,6 +199,8 @@ jQuery(async () => {
     eventSource.on(event_types.MESSAGE_SENT, enableLuaEntries);
     eventSource.on(event_types.MESSAGE_SWIPED, enableLuaEntries);
     eventSource.on(event_types.WORLDINFO_UPDATED, ensureBothLuaLoreBooks);
+
+    console.debug("[LLB] Event sources loaded");
 
     /*
     Rendering some HTML
