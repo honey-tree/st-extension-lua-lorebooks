@@ -105,13 +105,20 @@ function insertLuaLoreBook(loreBook, luaLoreBook) {
         }
     }
 
-    const [key, entry] = Object.entries(loreBook.entries)[0];
-    entry.extensions = entry.extensions || {};
-    entry.extensions.luaLoreBook = luaLoreBook;
+    if (loreBook.entries) {
+        const [key, entry] = Object.entries(loreBook.entries)[0];
+        entry.extensions = entry.extensions || {};
+        entry.extensions.luaLoreBook = luaLoreBook;
+    }
 }
 
 async function ensureBothLuaLoreBooks(loreBookName, loreBook) {
-    console.debug("[LLB] Ensure both Lua LoreBooks triggered");
+    console.debug("[LLB] Ensure both Lua LoreBooks triggered", loreBook);
+
+    if (!loreBook.entries) {
+        console.debug("[LLB] LB has no entries, skipping");
+        return;
+    }
 
     const topLevelLuaLoreBook = extractTopLevelLuaLoreBook(loreBook);
     const entryLevelLuaLoreBook = extractEntryLevelLuaLoreBook(loreBook);
@@ -156,7 +163,7 @@ async function enableLuaEntries() {
                 context: context
             }));
 
-            console.debug("The data object that will be fed into the Lua code:", data);
+            console.debug("[LLB] The data object that will be fed into the Lua code:", data);
 
             console.debug(`[LLB]___INVOKING ${loreBookName}'s LUA FUNCTION TO DETERMINE LB ENTRIES___`);
             const entriesFunction = lua.global.get('entries');
